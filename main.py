@@ -1,17 +1,11 @@
-"""
-API REST — Cloud Monitor Agent
-Expõe o agente ADK como endpoint HTTP via FastAPI.
-
-Endpoints:
-  POST /analyze   — analisa logs e alertas de um recurso GCP
-  GET  /health    — healthcheck
-"""
-
 import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Literal, Optional
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -20,7 +14,6 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai.types import Content, Part
 
-# Importa a factory do agente
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -40,10 +33,6 @@ async def lifespan(app: FastAPI):
     global _runner
 
     print("🚀 Inicializando Cloud Monitor Agent...")
-
-    # McpToolset com StdioConnectionParams NÃO é async — create_agent() retorna
-    # diretamente, sem await. O processo npx sobe em background quando o Runner
-    # executa o primeiro request.
     agent = create_agent()
 
     session_service = InMemorySessionService()
@@ -53,10 +42,6 @@ async def lifespan(app: FastAPI):
         session_service=session_service,
     )
 
-    # Aquecimento: dá tempo ao processo npx inicializar antes do 1º request real.
-    # Sem isso, o TaskGroup do ADK recebe chamadas antes do MCP estar pronto.
-    print("🔥 Aguardando MCP inicializar...")
-    await asyncio.sleep(3)
     print("✅ Agente pronto!")
     yield
 
@@ -170,7 +155,7 @@ def _build_prompt(req: AnalyzeRequest) -> str:
     """Monta o prompt enviado ao agente com os parâmetros da requisição."""
     region_info = f" na região {req.region}" if req.region else ""
 
-
+    # Janela de tempo
     if req.start_time and req.end_time:
         time_info = (
             f"no intervalo de '{req.start_time.strftime('%Y-%m-%dT%H:%M:%SZ')}' "
@@ -179,7 +164,7 @@ def _build_prompt(req: AnalyzeRequest) -> str:
     else:
         time_info = f"nas últimas {req.hours_back} horas"
 
-
+    # Escopo do recurso
     if req.resource_id:
         scope = (
             f"o recurso '{req.resource_id}' do tipo '{req.resource_type}' "
@@ -209,6 +194,7 @@ async def _run_agent(prompt: str) -> str:
     session_id = str(uuid.uuid4())
     user_id = "api-user"
 
+    # Cria uma sessão isolada por request
     await _runner.session_service.create_session(
         app_name=APP_NAME,
         user_id=user_id,
@@ -223,7 +209,7 @@ async def _run_agent(prompt: str) -> str:
             session_id=session_id,
             new_message=user_message,
     ):
-
+        # Captura apenas o texto final do agente (ignora tool calls intermediárias)
         if event.is_final_response() and event.content and event.content.parts:
             for part in event.content.parts:
                 if hasattr(part, "text") and part.text:
